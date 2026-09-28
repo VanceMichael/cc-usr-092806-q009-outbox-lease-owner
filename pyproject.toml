@@ -1,0 +1,13 @@
+[build-system]
+requires = []
+build-backend = "civicflow.build_backend"
+backend-path = ["src"]
+
+[project]
+name = "civicflow"
+version = "1.0.0"
+description = "跨机构协同事务与证据账本服务"
+requires-python = ">=3.11"
+
+[project.scripts]
+civicflow = "civicflow.cli:main"

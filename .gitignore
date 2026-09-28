@@ -1,0 +1,12 @@
+.env
+*.key
+*.pem
+*.sqlite
+*.sqlite3
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+coverage/
+.DS_Store
