@@ -81,11 +81,23 @@ CREATE TABLE IF NOT EXISTS outbox_messages (
     payload_json TEXT NOT NULL,
     available_at TEXT NOT NULL,
     lease_until TEXT,
+    lease_owner TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL,
-    delivered_at TEXT
+    delivered_at TEXT,
+    delivered_by TEXT
 );
 CREATE INDEX IF NOT EXISTS outbox_ready ON outbox_messages(status, available_at, lease_until);
+CREATE TABLE IF NOT EXISTS outbox_audit (
+    audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    attempts INTEGER NOT NULL,
+    detail_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS outbox_audit_message ON outbox_audit(message_id, audit_id);
 CREATE TABLE IF NOT EXISTS journal_entries (
     entry_id TEXT PRIMARY KEY,
     journal_key TEXT NOT NULL,
@@ -142,6 +154,40 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            self._migrate_outbox_lease_owner(connection)
+
+    @staticmethod
+    def _column_names(connection: sqlite3.Connection, table: str) -> set[str]:
+        return {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+
+    def _migrate_outbox_lease_owner(self, connection: sqlite3.Connection) -> None:
+        """旧版发件箱没有持久化租约持有者，补齐列并把无主租约恢复为可重试。
+
+        历史 pending/failed/dead/delivered 消息原样保留（attempts、状态不变），
+        旧版崩溃遗留的 leased 行没有持久化持有者（lease_owner 为 NULL），无法
+        证明归属，回退为 failed 以便重新领取；新版持有有效租约的行在重启后保留，
+        仍须等到租约到期才能被其他进程领取。同时为每条历史消息补一条审计，
+        保证迁移后审计记录完整可查。
+        """
+        columns = self._column_names(connection, "outbox_messages")
+        if not columns:
+            return
+        if "lease_owner" not in columns:
+            connection.execute("ALTER TABLE outbox_messages ADD COLUMN lease_owner TEXT")
+        if "delivered_by" not in columns:
+            connection.execute("ALTER TABLE outbox_messages ADD COLUMN delivered_by TEXT")
+        connection.execute(
+            "UPDATE outbox_messages SET status='failed', lease_until=NULL, lease_owner=NULL "
+            "WHERE status='leased' AND lease_owner IS NULL"
+        )
+        connection.execute(
+            "INSERT INTO outbox_audit(occurred_at,message_id,action,actor_id,attempts,detail_json) "
+            "SELECT m.available_at, m.message_id, 'migrated', "
+            "COALESCE(m.delivered_by, 'legacy:unknown'), m.attempts, "
+            "'{\"from_legacy\":true,\"status\":\"' || m.status || '\"}' "
+            "FROM outbox_messages m "
+            "WHERE NOT EXISTS (SELECT 1 FROM outbox_audit a WHERE a.message_id = m.message_id)"
+        )
 
     @contextmanager
     def transaction(self, *, immediate: bool = True) -> Iterator[sqlite3.Connection]:
