@@ -87,10 +87,12 @@ class PlatformTest(unittest.TestCase):
     def test_outbox_delivery_requires_lease(self):
         message = self.app.outbox.enqueue(topic="case", aggregate_id="case:1", payload={"ok": True})
         with self.assertRaises(ConflictError):
-            self.app.outbox.complete(message)
+            self.app.outbox.complete(message, owner="worker")
         leased = self.app.outbox.lease(owner="worker")
         self.assertEqual(leased[0]["message_id"], message)
-        self.app.outbox.complete(message)
+        self.assertEqual(leased[0]["lease_owner"], "worker")
+        self.app.outbox.complete(message, owner="worker")
+        self.assertEqual(self.app.outbox.get(message)["delivered_by"], "worker")
 
     def test_permissions_and_self_review(self):
         limited = AccessContext(actor_id="reader", permissions=frozenset({"read:cases"}))

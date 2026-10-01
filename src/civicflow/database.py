@@ -80,10 +80,12 @@ CREATE TABLE IF NOT EXISTS outbox_messages (
     aggregate_id TEXT NOT NULL,
     payload_json TEXT NOT NULL,
     available_at TEXT NOT NULL,
+    lease_owner TEXT,
     lease_until TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL,
-    delivered_at TEXT
+    delivered_at TEXT,
+    delivered_by TEXT
 );
 CREATE INDEX IF NOT EXISTS outbox_ready ON outbox_messages(status, available_at, lease_until);
 CREATE TABLE IF NOT EXISTS journal_entries (
@@ -142,6 +144,16 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            self._migrate_outbox_schema(connection)
+
+    @staticmethod
+    def _migrate_outbox_schema(connection: sqlite3.Connection) -> None:
+        """为旧版发件箱补齐租约归属列（幂等）。"""
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(outbox_messages)")}
+        if "lease_owner" not in columns:
+            connection.execute("ALTER TABLE outbox_messages ADD COLUMN lease_owner TEXT")
+        if "delivered_by" not in columns:
+            connection.execute("ALTER TABLE outbox_messages ADD COLUMN delivered_by TEXT")
 
     @contextmanager
     def transaction(self, *, immediate: bool = True) -> Iterator[sqlite3.Connection]:

@@ -33,7 +33,11 @@ class CivicFlow:
         database = Database(path); database.initialize(); clock = Clock(fixed_now)
         audit = AuditLog(clock); idempotency = IdempotencyStore(clock)
         repository = EntityRepository(database, clock, audit, idempotency)
-        return cls(database, clock, repository, Inbox(database, clock), Outbox(database, clock), Ledger(database, clock), ReservationBook(database), JobQueue(database, clock))
+        outbox = Outbox(database, clock, audit)
+        app = cls(database, clock, repository, Inbox(database, clock), outbox, Ledger(database, clock), ReservationBook(database), JobQueue(database, clock))
+        # 旧版本发件箱数据恢复：无主租约退回重投，缺失的送达者补哨兵，保证重启即安全。
+        outbox.recover_legacy()
+        return app
 
     def verify(self) -> dict:
         with self.database.connect() as connection:
